@@ -27,6 +27,7 @@ Commands:
   label      'Label' resources
   get        'Get' resources
   scale      'Scale' resources
+  set        'Set' resources
   cordon     'Cordon' resources
   uncordon   'Uncordon' resources
   dump       'Dump' resources
@@ -82,8 +83,8 @@ Options:
 ❯ kubectl mayastor get pools
  ID               DISKS                                                     MANAGED  NODE      STATUS  CAPACITY  ALLOCATED  AVAILABLE
  pool-1-kworker1  aio:///dev/vdb?uuid=d8a36b4b-0435-4fee-bf76-f2aef980b833  true     kworker1  Online  500GiB    100GiB     400GiB
- pool-1-kworker2  aio:///dev/vdc?uuid=bb12ec7d-8fc3-4644-82cd-dee5b63fc8c5  true     kworker1  Online  500GiB    100GiB     400GiB
- pool-1-kworker2  aio:///dev/vdb?uuid=f324edb7-1aca-41ec-954a-9614527f77e1  true     kworker2  Online  500GiB    100GiB     400GiB
+ pool-1-kworker2  aio:///dev/vdc?uuid=bb12ec7d-8fc3-4644-82cd-dee5b63fc8c5  true     kworker2  Online  500GiB    100GiB     400GiB
+ pool-1-kworker3  aio:///dev/vdb?uuid=f324edb7-1aca-41ec-954a-9614527f77e1  true     kworker3  Online  500GiB    100GiB     400GiB
 ```
 4. Get Pool by ID
 ```
@@ -91,7 +92,22 @@ Options:
  ID               DISKS                                                     MANAGED  NODE      STATUS  CAPACITY  ALLOCATED  AVAILABLE
  pool-1-kworker1  aio:///dev/vdb?uuid=d8a36b4b-0435-4fee-bf76-f2aef980b833  true     kworker1  Online  500GiB    100GiB     400GiB
 ```
-5. Get Nodes
+
+5. Get Pool by Node ID
+```
+❯ kubectl mayastor get pools --node-id kworker1
+ ID               DISKS                                                     MANAGED  NODE      STATUS  CAPACITY  ALLOCATED  AVAILABLE
+ pool-1-kworker1  aio:///dev/vdb?uuid=d8a36b4b-0435-4fee-bf76-f2aef980b833  true     kworker1  Online  500GiB    100GiB     400GiB
+ ```
+
+6. Select pools based on labels. Filer labels must be provided in `key1=value1,key2=value2` format.
+```
+❯ kubectl mayastor get pools --selector  type=hhd
+ ID               DISKS                                                     MANAGED  NODE      STATUS  CAPACITY  ALLOCATED  AVAILABLE
+ pool-1-kworker3  aio:///dev/vdb?uuid=d8a36b4b-0435-4fee-bf76-f2aef980b833  true     kworker3  Online  500GiB    100GiB     400GiB
+ ```
+
+7. Get Nodes
 ```
 ❯ kubectl mayastor get nodes
  ID           GRPC ENDPOINT   STATUS
@@ -99,14 +115,14 @@ Options:
  io-engine-3  10.1.0.7:10124  Online, Cordoned, Drained
  io-engine-2  10.1.0.6:10124  Online
 ```
-6. Get Node by ID
+8. Get Node by ID
 ```
 ❯ kubectl mayastor get node io-engine-1
  ID           GRPC ENDPOINT   STATUS
  io-engine-1  10.1.0.5:10124  Online, Cordoned
 ```
 
-7. Get Volume(s)/Pool(s)/Node(s) to a specific Output Format
+9. Get Volume(s)/Pool(s)/Node(s) to a specific Output Format
 ```
 ❯ kubectl mayastor -ojson get volumes
 [{"spec":{"num_replicas":2,"size":67108864,"status":"Created","target":{"node":"ksnode-2","protocol":"nvmf"},"uuid":"5703e66a-e5e5-4c84-9dbe-e5a9a5c805db","topology":{"explicit":{"allowed_nodes":["ksnode-1","ksnode-3","ksnode-2"],"preferred_nodes":["ksnode-2","ksnode-3","ksnode-1"]}},"policy":{"self_heal":true}},"state":{"target":{"children":[{"state":"Online","uri":"bdev:///ac02cf9e-8f25-45f0-ab51-d2e80bd462f1?uuid=ac02cf9e-8f25-45f0-ab51-d2e80bd462f1"},{"state":"Online","uri":"nvmf://192.168.122.6:8420/nqn.2019-05.io.openebs:7b0519cb-8864-4017-85b6-edd45f6172d8?uuid=7b0519cb-8864-4017-85b6-edd45f6172d8"}],"deviceUri":"nvmf://192.168.122.234:8420/nqn.2019-05.io.openebs:nexus-140a1eb1-62b5-43c1-acef-9cc9ebb29425","node":"ksnode-2","rebuilds":0,"protocol":"nvmf","size":67108864,"state":"Online","uuid":"140a1eb1-62b5-43c1-acef-9cc9ebb29425"},"size":67108864,"status":"Online","uuid":"5703e66a-e5e5-4c84-9dbe-e5a9a5c805db"}}]
@@ -117,6 +133,12 @@ Options:
 ❯ kubectl mayastor -oyaml get pools
 ---
 - id: pool-1-kworker1
+  spec:
+    disks:
+    - /dev/vdb
+    id: pool-1-kworker1
+    node: kworker1
+    status: Created
   state:
     capacity: 5360320512
     disks:
@@ -125,7 +147,14 @@ Options:
     node: kworker1
     status: Online
     used: 1111490560
+    committed: 1111490560
 - id: pool-1-kworker2
+  spec:
+    disks:
+    - /dev/vdb
+    id: pool-1-kworker2
+    node: kworker2
+    status: Created
   state:
     capacity: 5360320512
     disks:
@@ -134,17 +163,28 @@ Options:
     node: kworker1
     status: Online
     used: 2185232384
+    committed: 2185232384
 - id: pool-1-kworker3
+  spec:
+    disks:
+    - /dev/vdb
+    id: pool-1-kworker3
+    labels:
+      type: hot
+      openebs.io/created-by: operator-diskpool
+    node: kworker3
+    status: Created
   state:
     capacity: 5360320512
     disks:
       - "aio:///dev/vdb?uuid=f324edb7-1aca-41ec-954a-9614527f77e1"
     id: pool-1-kworker-3
-    node: kworker2
+    node: kworker3
     status: Online
     used: 3258974208
+    committed: 3258974208
 ```
-8. Replica topology for a specific volume
+10. Replica topology for a specific volume
 ```
 ❯ kubectl mayastor get volume-replica-topology ec4e66fd-3b33-4439-b504-d49aba53da26
  ID                                    NODE      POOL             STATUS  CAPACITY  ALLOCATED SNAPSHOTS  CHILD-STATUS  REASON  REBUILD
@@ -152,7 +192,7 @@ Options:
  d3856829-22b3-414d-a01b-4b6467db14fb  kworker2  pool-1-kworker2  Online  384MiB    8MiB      64MiB      Online        <none>  <none>
 ```
 
-9. Replica topology for all volumes
+11. Replica topology for all volumes
 ```
 ❯ kubectl mayastor get volume-replica-topologies
 VOLUME-ID                              ID                                    NODE      POOL             STATUS  CAPACITY  ALLOCATED SNAPSHOTS CHILD-STATUS  REASON      REBUILD
@@ -164,7 +204,7 @@ VOLUME-ID                              ID                                    NOD
  └─                                    39431c11-0eea-48e7-970f-a2359ebbb9d1  kworker3  pool-1-kworker3  Online  60MiB     60MiB     0MiB      Online        <none>      <none>
 ```
 
-10. Volume Snapshots by volumeID
+12. Volume Snapshots by volumeID
 ```
 ❯ kubectl mayastor get volume-snapshots --volume ec4e66fd-3b33-4439-b504-d49aba53da26
  ID                                    TIMESTAMP             SOURCE-SIZE  ALLOCATED-SIZE  TOTAL-ALLOCATED-SIZE  SOURCE-VOL                            RESTORES
@@ -172,7 +212,7 @@ VOLUME-ID                              ID                                    NOD
 
 ```
 
-11. Get Volume Snapshots
+13. Get Volume Snapshots
 ```
 ❯ kubectl mayastor get volume-snapshots
  ID                                    TIMESTAMP             SOURCE-SIZE  ALLOCATED-SIZE  TOTAL-ALLOCATED-SIZE  SOURCE-VOL                            RESTORES
@@ -181,7 +221,7 @@ VOLUME-ID                              ID                                    NOD
 
 ```
 
-12. Volume Rebuild History by volumeID
+14. Volume Rebuild History by volumeID
 ```
 ❯ kubectl mayastor get rebuild-history e898106d-e735-4edf-aba2-932d42c3c58d
 DST                                   SRC                                   STATE      TOTAL  RECOVERED  TRANSFERRED  IS-PARTIAL  START-TIME            END-TIME
@@ -195,7 +235,7 @@ b5de71a6-055d-433a-a1c5-2b39ade05d86  0dafa450-7a19-4e21-a919-89c6f9bd2a97  Comp
 
 **NOTE: The above command lists volume snapshots for all volumes if `--volume` or `--snapshot` or a combination of both flags is not used.**
 
-13. Get BlockDevices by NodeID
+15. Get BlockDevices by NodeID
 ```
 ❯ kubectl mayastor get block-devices kworker1 --all
  DEVNAME          DEVTYPE    SIZE       AVAILABLE  MODEL                       DEVPATH                                                         FSTYPE  FSUUID  MOUNTPOINT  PARTTYPE                              MAJOR            MINOR                                     DEVLINKS
@@ -209,6 +249,26 @@ b5de71a6-055d-433a-a1c5-2b39ade05d86  0dafa450-7a19-4e21-a919-89c6f9bd2a97  Comp
  /dev/nvme4n1  disk     2TiB      yes        Amazon Elastic Block Store  /devices/pci0000:00/0000:00:1d.0/nvme/nvme4/nvme4n1  259    12     "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol06eb486c9593587a9", "/dev/disk/by-id/nvme-nvme.1d0f-766f6c3036656234383663393539333538376139-416d617a6f6e20456c617374696320426c6f636b2053746f7265-00000001", "/dev/disk/by-path/pci-0000:00:1d.0-nvme-1"
 ```
 **NOTE: The above command lists usable blockdevices if `--all` flag is not used, but currently since there isn't a way to identify whether the `disk` has a blobstore pool, `disks` not used by `pools` created by `control-plane` are shown as usable if they lack any filesystem uuid.**
+
+16. Snapshot topology for a specific volume
+```
+❯ kubectl mayastor get volume-snapshot-topology --volume ec4e66fd-3b33-4439-b504-d49aba53da26
+ SNAPSHOT-ID                           ID                                    POOL    SNAPSHOT_STATUS  SIZE      ALLOCATED_SIZE  SOURCE
+ 25823425-41fa-434a-9efd-a356b70b5d7c  b2241dfb-f0a8-4fcc-a7d4-31bbccc66757  pool-3  Offline                                    2ffac7e4-d017-4844-9ae3-10d94bbfea73
+ ├─                                    b197eac8-2dc0-41d6-9097-3d21d3b734e8  pool-1  Online           12582912  12582912        8f764ec7-a119-4403-9389-121e087262a4
+ └─                                    a3c3b1ab-a1da-4db0-816f-56c0d09ece57  pool-2  Online           12582912  12582912        6b7963de-c994-4134-b5d7-540a4a554d44
+ 25823425-41fa-434a-9efd-a356b70b5d7d  95767535-a537-4a86-83bd-a304d183434d  pool-3  Offline                                    2ffac7e4-d017-4844-9ae3-10d94bbfea73
+ ├─                                    9e39117e-96fa-46a0-a7ee-6d004e3b3495  pool-1  Online           12582912  0               8f764ec7-a119-4403-9389-121e087262a4
+ └─                                    79f15ccb-0ac6-4812-936e-57055430a2d6  pool-2  Online           12582912  0               6b7963de-c994-4134-b5d7-540a4a554d44
+ ```
+ ```
+❯ kubectl mayastor get volume-snapshot-topology --snapshot 25823425-41fa-434a-9efd-a356b70b5d7c
+ SNAPSHOT-ID                           ID                                    POOL    SNAPSHOT_STATUS  SIZE      ALLOCATED_SIZE  SOURCE
+ 25823425-41fa-434a-9efd-a356b70b5d7c  b2241dfb-f0a8-4fcc-a7d4-31bbccc66757  pool-3  Offline                                    2ffac7e4-d017-4844-9ae3-10d94bbfea73
+ ├─                                    b197eac8-2dc0-41d6-9097-3d21d3b734e8  pool-1  Online           12582912  12582912        8f764ec7-a119-4403-9389-121e087262a4
+ └─                                    a3c3b1ab-a1da-4db0-816f-56c0d09ece57  pool-2  Online           12582912  12582912        6b7963de-c994-4134-b5d7-540a4a554d44
+
+ ```
 
 </details>
 
@@ -284,6 +344,17 @@ Node node-1-14048 labelled successfully. Current labels: {}
 ```
 ❯ kubectl mayastor scale volume 0c08667c-8b59-4d11-9192-b54e27e0ce0f 5
 Volume 0c08667c-8b59-4d11-9192-b54e27e0ce0f Scaled Successfully 🚀
+
+```
+</details>
+
+<details>
+<summary> Set Resources operations </summary>
+
+1. Set Volume Resource by ID
+```
+❯ kubectl mayastor set volume ec4e66fd-3b33-4439-b504-d49aba53da26 max-snapshots 30
+Volume ec4e66fd-3b33-4439-b504-d49aba53da26 property max_snapshots(30) set successfully
 
 ```
 </details>

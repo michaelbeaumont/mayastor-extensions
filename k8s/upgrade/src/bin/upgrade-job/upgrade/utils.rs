@@ -1,15 +1,14 @@
 use crate::common::{
-    constants::{CHART_VERSION_LABEL_KEY, PRODUCT},
+    constants::product_train,
     error::{
-        CordonStorageNode, EmptyStorageNodeSpec, GetStorageNode, HelmChartVersionLabelHasNoValue,
-        ListStorageVolumes, NoNamespaceInPod, Result, SemverParse, StorageNodeUncordon,
+        CordonStorageNode, EmptyStorageNodeSpec, GetStorageNode, ListStorageVolumes, Result,
+        StorageNodeUncordon,
     },
     rest_client::RestClientSet,
 };
 use k8s_openapi::api::core::v1::Pod;
-use kube::{api::ObjectList, ResourceExt};
+use kube::ResourceExt;
 use openapi::models::{CordonDrainState, Volume, VolumeStatus};
-use semver::Version;
 use snafu::ResultExt;
 use std::{collections::HashSet, time::Duration};
 use tracing::{info, warn};
@@ -139,7 +138,7 @@ pub(crate) fn replica_rebuild_count(volume: &Volume) -> i32 {
 
 /// This function returns 'true' only if all of the containers in the Pods contained in the
 /// ObjectList<Pod> have their Ready status.condition value set to true.
-pub(crate) fn all_pods_are_ready(pod_list: ObjectList<Pod>) -> bool {
+pub(crate) fn all_pods_are_ready(pod_list: Vec<Pod>) -> bool {
     let not_ready_warning = |pod_name: &String, namespace: &String| {
         warn!(
             "Couldn't verify the ready condition of Pod '{}' in namespace '{}' to be true",
@@ -176,43 +175,6 @@ pub(crate) fn all_pods_are_ready(pod_list: ObjectList<Pod>) -> bool {
     true
 }
 
-/// Checks to see if all of io-engine Pods are already upgraded to the version of the local helm
-/// chart.
-pub(crate) async fn data_plane_is_upgraded(
-    target_version: &str,
-    io_engine_pod_list: &ObjectList<Pod>,
-) -> Result<bool> {
-    let target_version_requirement: Version =
-        Version::parse(target_version).context(SemverParse {
-            version_string: target_version.to_string(),
-        })?;
-
-    for pod in io_engine_pod_list {
-        let version_str = pod.labels().get(CHART_VERSION_LABEL_KEY).ok_or(
-            HelmChartVersionLabelHasNoValue {
-                pod_name: pod.name_any(),
-                namespace: pod.namespace().ok_or(
-                    NoNamespaceInPod {
-                        pod_name: pod.name_any(),
-                        context: "checking to see if data-plane Pods are already upgraded"
-                            .to_string(),
-                    }
-                    .build(),
-                )?,
-            }
-            .build(),
-        )?;
-        let version = Version::parse(version_str).context(SemverParse {
-            version_string: version_str.clone(),
-        })?;
-        if !target_version_requirement.eq(&version) {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
 /// Cordon storage node.
 pub(crate) async fn cordon_storage_node(
     node_id: &str,
@@ -243,7 +205,7 @@ pub(crate) async fn cordon_storage_node(
         Some(CordonDrainState::cordonedstate(cordon_state))
             if cordon_state.cordonlabels.contains(&cordon_label) =>
         {
-            info!(node.id = %node_id, "{PRODUCT} Node is already cordoned");
+            info!(node.id = %node_id, "{} Node is already cordoned", product_train());
         }
         _ => {
             rest_client
@@ -254,7 +216,7 @@ pub(crate) async fn cordon_storage_node(
                     node_id: node_id.to_string(),
                 })?;
 
-            info!(node.id = %node_id, "Put cordon label for {PRODUCT} Node");
+            info!(node.id = %node_id, "Put cordon label for {} Node", product_train());
         }
     }
 
@@ -301,13 +263,14 @@ pub(crate) async fn uncordon_storage_node(
             info!(
                 node.id = %node_id,
                 label = %cordon_label,
-                "Removed cordon label from {PRODUCT} Node"
+                "Removed cordon label from {} Node",
+                product_train()
             );
         }
         _ => info!(
                 node.id = %node_id,
                 label = %cordon_label,
-                "Cordon label absent from {PRODUCT} Node"
+                "Cordon label absent from {} Node", product_train()
         ),
     }
 

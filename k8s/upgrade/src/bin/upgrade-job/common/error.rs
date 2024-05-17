@@ -1,7 +1,7 @@
 use crate::{
     common::constants::{
-        CHART_VERSION_LABEL_KEY, CORE_CHART_NAME, PRODUCT, TO_UMBRELLA_SEMVER, UMBRELLA_CHART_NAME,
-        UMBRELLA_CHART_UPGRADE_DOCS_URL,
+        helm_release_version_key, product_train, CORE_CHART_NAME, TO_UMBRELLA_SEMVER,
+        UMBRELLA_CHART_NAME, UMBRELLA_CHART_UPGRADE_DOCS_URL,
     },
     events::event_recorder::EventNote,
     helm::chart::PromtailConfigClient,
@@ -21,7 +21,7 @@ pub(crate) enum Error {
     /// Error for when the storage REST API URL is parsed.
     #[snafu(display(
         "Failed to parse {} REST API URL {}: {}",
-        PRODUCT,
+        product_train(),
         rest_endpoint,
         source
     ))]
@@ -44,7 +44,7 @@ pub(crate) enum Error {
     /// Error for when REST API configuration fails.
     #[snafu(display(
         "Failed to configure {} REST API client with endpoint {}: {:?}",
-        PRODUCT,
+        product_train(),
         rest_endpoint,
         source,
     ))]
@@ -202,20 +202,6 @@ pub(crate) enum Error {
         pod_namespace: String,
     },
 
-    /// Error for when a Kubernetes API request for GET-ing a list of Pods filtered by label(s)
-    /// fails.
-    #[snafu(display(
-        "Failed to list Pods with label {} in namespace {}: {}",
-        label,
-        namespace,
-        source
-    ))]
-    ListPodsWithLabel {
-        source: kube::Error,
-        label: String,
-        namespace: String,
-    },
-
     /// Error for when a Kubernetes API request for GET-ing a list of Nodes filtered by label(s)
     /// fails.
     #[snafu(display("Failed to list Nodes with label {}: {}", label, source))]
@@ -258,7 +244,7 @@ pub(crate) enum Error {
     EmptyPodUid { name: String, namespace: String },
 
     /// Error for when an uncordon request for a storage node fails.
-    #[snafu(display("Failed to uncordon {} Node {}: {}", PRODUCT, node_id, source))]
+    #[snafu(display("Failed to uncordon {} Node {}: {}", product_train(), node_id, source))]
     StorageNodeUncordon {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
         node_id: String,
@@ -273,37 +259,37 @@ pub(crate) enum Error {
     },
 
     /// Error for when listing storage nodes fails.
-    #[snafu(display("Failed to list {} Nodes: {}", PRODUCT, source))]
+    #[snafu(display("Failed to list {} Nodes: {}", product_train(), source))]
     ListStorageNodes {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
     },
 
     /// Error for when GET-ing a storage node fails.
-    #[snafu(display("Failed to list {} Node {}: {}", PRODUCT, node_id, source))]
+    #[snafu(display("Failed to list {} Node {}: {}", product_train(), node_id, source))]
     GetStorageNode {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
         node_id: String,
     },
 
     /// Error for when the storage node's Spec is empty.
-    #[snafu(display("Failed to get {} Node {}", PRODUCT, node_id))]
+    #[snafu(display("Failed to get {} Node {}", product_train(), node_id))]
     EmptyStorageNodeSpec { node_id: String },
 
     /// Error for when a GET request for a list of storage volumes fails.
-    #[snafu(display("Failed to list {} Volumes: {}", PRODUCT, source))]
+    #[snafu(display("Failed to list {} Volumes: {}", product_train(), source))]
     ListStorageVolumes {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
     },
 
     /// Error for when a storage node drain request fails.
-    #[snafu(display("Failed to drain {} Node {}: {}", PRODUCT, node_id, source))]
+    #[snafu(display("Failed to drain {} Node {}: {}", product_train(), node_id, source))]
     DrainStorageNode {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
         node_id: String,
     },
 
     /// Error for when a storage node cordon request fails.
-    #[snafu(display("Failed to cordon {} Node {}: {}", PRODUCT, node_id, source))]
+    #[snafu(display("Failed to cordon {} Node {}: {}", product_train(), node_id, source))]
     CordonStorageNode {
         source: openapi::tower::client::Error<openapi::models::RestJsonError>,
         node_id: String,
@@ -378,7 +364,7 @@ pub(crate) enum Error {
         "'{}' is not a known {} helm chart, only helm charts '{}-<version-tag>' and '{}-<version-tag>' \
         are supported",
         chart_name,
-        PRODUCT,
+        product_train(),
         CORE_CHART_NAME,
         UMBRELLA_CHART_NAME
     ))]
@@ -413,7 +399,7 @@ pub(crate) enum Error {
         version_string: String,
     },
 
-    /// Error for when the detected upgrade path for PRODUCT is not supported.
+    /// Error for when the detected upgrade path for product_train() is not supported.
     #[snafu(display("The upgrade path is invalid"))]
     InvalidUpgradePath,
 
@@ -491,23 +477,6 @@ pub(crate) enum Error {
     #[snafu(display("Failed to send Event over the channel"))]
     EventChannelSend,
 
-    /// Error for when the no value for version label is found on the helm chart.
-    #[snafu(display(
-        "Failed to get the value of the {} label in Pod {} in Namespace {}",
-        CHART_VERSION_LABEL_KEY,
-        pod_name,
-        namespace
-    ))]
-    HelmChartVersionLabelHasNoValue { pod_name: String, namespace: String },
-
-    /// Error for when a pod does not have Namespace set on it.
-    #[snafu(display(
-        "Found None when trying to get Namespace for Pod {}, context: {}",
-        pod_name,
-        context
-    ))]
-    NoNamespaceInPod { pod_name: String, context: String },
-
     /// Error for the Umbrella chart is not upgraded.
     #[snafu(display(
         "The {} helm chart is not upgraded to version {}: Upgrade for helm chart {} is not \
@@ -532,7 +501,7 @@ pub(crate) enum Error {
     /// Error for when the Storage REST API Deployment is absent.
     #[snafu(display(
         "Found no {} REST API Deployments in the namespace {} with labelSelector {}",
-        PRODUCT,
+        product_train(),
         namespace,
         label_selector
     ))]
@@ -544,7 +513,7 @@ pub(crate) enum Error {
     /// Error for when the CHART_VERSION_LABEL_KEY is missing amongst the labels in a Deployment.
     #[snafu(display(
         "A label with the key {} was not found for Deployment {} in namespace {}",
-        CHART_VERSION_LABEL_KEY,
+        helm_release_version_key(),
         deployment_name,
         namespace
     ))]
@@ -694,6 +663,13 @@ pub(crate) enum Error {
 
     #[snafu(display("failed to list CustomResourceDefinitions: {source}"))]
     ListCrds { source: kube::Error },
+
+    #[snafu(display("Partial rebuild must be disabled for upgrades from {chart_name} chart versions >= {lower_extent}, <= {upper_extent}"))]
+    PartialRebuildNotAllowed {
+        chart_name: String,
+        lower_extent: String,
+        upper_extent: String,
+    },
 }
 
 /// A wrapper type to remove repeated Result<T, Error> returns.

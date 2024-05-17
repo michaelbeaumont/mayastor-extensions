@@ -8,7 +8,7 @@
 CI=${CI-}
 
 set -euo pipefail
-trap 'cleanup_and_exit "$?"' EXIT
+
 # Test if the image already exists in dockerhub
 dockerhub_tag_exists() {
   curl --silent -f -lSL https://hub.docker.com/v2/repositories/$1/tags/$2 1>/dev/null 2>&1
@@ -30,11 +30,43 @@ nix_experimental() {
       echo -n " "
   fi
 }
+pre_fetch_cargo_deps() {
+  local nixAttrPath=$1
+  local project=$2
+  local maxAttempt=$3
+
+  local outLink="--no-out-link"
+  local cargoVendorMsg=""
+  if [ -n "$CARGO_VENDOR_DIR" ]; then
+    if [ "$(realpath -ms "$CARGO_VENDOR_DIR")" = "$(realpath -ms "$SCRIPTDIR/..")" ]; then
+      cargoVendorDir="$CARGO_VENDOR_DIR/$GIT_BRANCH"
+    else
+      cargoVendorDir="$CARGO_VENDOR_DIR/$project/$GIT_BRANCH"
+    fi
+    cargoVendorMsg="into $(realpath -ms "$cargoVendorDir") "
+    outLink="--out-link "$cargoVendorDir""
+  fi
+
+  for (( attempt=1; attempt<=maxAttempt; attempt++ )); do
+     if $NIX_BUILD $outLink -A "$nixAttrPath"; then
+       echo "Cargo vendored dependencies pre-fetched "$cargoVendorMsg"after $attempt attempt(s)"
+       return 0
+     fi
+     sleep 1
+  done
+  if [ "$attempt" = "1" ]; then
+    echo "Cargo vendor pre-fetch is disabled"
+    return 0
+  fi
+
+  echo "Failed to pre-fetch the cargo vendored dependencies in $maxAttempt attempts"
+  exit 1
+}
 cleanup_and_exit() {
   local -r status=${1}
 
   # Remove helm subcharts, if `helm dependency update` was run.
-  if [ "$_helm_dependencies_updated" = "true" ]; then
+  if [ "$HELM_DEPS_UPDATED" = "true" ]; then
     echo "Cleaning up helm chart dependencies..."
     for dep_chart in "$CHART_DIR"/charts/*; do
       if [ "$dep_chart" = "$CHART_DIR/charts/crds" ]; then
@@ -81,11 +113,12 @@ RM="rm"
 SCRIPTDIR=$(dirname "$0")
 TAG=`get_tag`
 HASH=`get_hash`
-BRANCH=`git rev-parse --abbrev-ref HEAD`
-BRANCH=${BRANCH////-}
+GIT_BRANCH=`git rev-parse --abbrev-ref HEAD`
+BRANCH=${GIT_BRANCH////-}
 IMAGES=
 DEFAULT_IMAGES="metrics.exporter.io-engine obs.callhome stats.aggregator upgrade.job"
 IMAGES_THAT_REQUIRE_HELM_CHART=("upgrade.job")
+PRODUCT_PREFIX=${MAYASTOR_PRODUCT_PREFIX:-""}
 UPLOAD=
 SKIP_PUBLISH=
 SKIP_BUILD=
@@ -97,8 +130,12 @@ ALL_IN_ONE="true"
 INCREMENTAL="false"
 DEFAULT_BINARIES="kubectl-plugin"
 BUILD_BINARIES=
-BIN_TARGET_PLAT="linux-musl"
 BINARY_OUT_LINK="."
+# This variable will be used to flag if the helm chart dependencies have been
+# been updated.
+HELM_DEPS_UPDATED="false"
+CARGO_VENDOR_DIR=${CARGO_VENDOR_DIR:-}
+CARGO_VENDOR_ATTEMPTS=${CARGO_VENDOR_ATTEMPTS:-25}
 
 # Check if all needed tools are installed
 curl --version >/dev/null
@@ -192,7 +229,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+trap 'cleanup_and_exit "$?"' EXIT
+
 cd $SCRIPTDIR/..
+
+# pre-fetch build dependencies with a number of attempts to harden against flaky networks
+pre_fetch_cargo_deps extensions.project-builder.cargoDeps "mayastor-extensions" "$CARGO_VENDOR_ATTEMPTS"
 
 if [ -z "$IMAGES" ]; then
   IMAGES="$DEFAULT_IMAGES"
@@ -239,15 +281,12 @@ if [ -n "$BUILD_BINARIES" ]; then
   mkdir -p $BINARY_OUT_LINK
   for name in $BUILD_BINARIES; do
     echo "Building static $name ..."
-    $NIX_BUILD --out-link $BINARY_OUT_LINK/$name -A utils.$BUILD_TYPE.$BIN_TARGET_PLAT.$name
+    $NIX_BUILD --out-link $BINARY_OUT_LINK/$name -A extensions.$BUILD_TYPE.$name --arg static true
   done
 fi
 
-# This variable will be used to flag if the helm chart dependencies have been
-# been updated.
-_helm_dependencies_updated="false"
 for name in $IMAGES; do
-  image_basename=$($NIX_EVAL -f . images.$BUILD_TYPE.$name.imageName | xargs)
+  image_basename=$($NIX_EVAL -f . images.$BUILD_TYPE.$name.imageName --argstr product_prefix "$PRODUCT_PREFIX" | xargs)
   image=$image_basename
   if [ -n "$REGISTRY" ]; then
     if [[ "${REGISTRY}" =~ '/' ]]; then
@@ -257,7 +296,7 @@ for name in $IMAGES; do
     fi
   fi
 
-  if [ "$_helm_dependencies_updated" = "false" ]; then
+  if [ "$HELM_DEPS_UPDATED" = "false" ]; then
     for helm_chart_user in ${IMAGES_THAT_REQUIRE_HELM_CHART[@]}; do
       if [ "$name" = "$helm_chart_user" ]; then
         echo "Updating helm chart dependencies..."
@@ -276,7 +315,7 @@ for name in $IMAGES; do
         done
 
         # Set flag to true
-        _helm_dependencies_updated="true"
+        HELM_DEPS_UPDATED="true"
         break
       fi
     done
@@ -287,7 +326,7 @@ for name in $IMAGES; do
   if [ -z $SKIP_BUILD ]; then
     archive=${name}
     echo "Building $image:$TAG ..."
-    $NIX_BUILD --out-link $archive-image -A images.$BUILD_TYPE.$archive --arg allInOne "$ALL_IN_ONE" --arg incremental "$INCREMENTAL"
+    $NIX_BUILD --out-link $archive-image -A images.$BUILD_TYPE.$archive --arg allInOne "$ALL_IN_ONE" --arg incremental "$INCREMENTAL" --argstr product_prefix "$PRODUCT_PREFIX"
     $DOCKER load -i $archive-image
     $RM $archive-image
     if [ "$image" != "$image_basename" ]; then

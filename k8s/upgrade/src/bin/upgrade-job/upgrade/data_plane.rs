@@ -1,20 +1,20 @@
 use crate::{
     common::{
         constants::{
-            AGENT_CORE_LABEL, CHART_VERSION_LABEL_KEY, CORDON_FOR_ANA_CHECK, DRAIN_FOR_UPGRADE,
-            IO_ENGINE_LABEL, PRODUCT,
+            cordon_ana_check, drain_for_upgrade, helm_release_version_key, product_train,
+            AGENT_CORE_LABEL, IO_ENGINE_LABEL,
         },
         error::{
             DrainStorageNode, EmptyPodNodeName, EmptyPodSpec, EmptyStorageNodeSpec, GetStorageNode,
-            ListNodesWithLabel, ListPodsWithLabel, ListPodsWithLabelAndField, ListStorageNodes,
-            PodDelete, Result, StorageNodeUncordon, TooManyIoEnginePods,
+            ListNodesWithLabel, ListStorageNodes, PodDelete, Result, StorageNodeUncordon,
+            TooManyIoEnginePods,
         },
         kube_client as KubeClient,
         rest_client::RestClientSet,
     },
     upgrade::utils::{
-        all_pods_are_ready, cordon_storage_node, data_plane_is_upgraded, list_all_volumes,
-        rebuild_result, uncordon_storage_node, RebuildResult,
+        all_pods_are_ready, cordon_storage_node, list_all_volumes, rebuild_result,
+        uncordon_storage_node, RebuildResult,
     },
 };
 use k8s_openapi::api::core::v1::{Node, Pod};
@@ -27,7 +27,7 @@ use snafu::ResultExt;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::info;
-use utils::{API_REST_LABEL, CSI_NODE_NVME_ANA, ETCD_LABEL};
+use utils::{csi_node_nvme_ana, API_REST_LABEL, ETCD_LABEL};
 
 /// Upgrade data plane by controlled restart of io-engine pods
 pub(crate) async fn upgrade_data_plane(
@@ -35,33 +35,16 @@ pub(crate) async fn upgrade_data_plane(
     rest_endpoint: String,
     upgrade_target_version: String,
     ha_is_enabled: bool,
+    yet_to_upgrade_io_engine_label: String,
+    yet_to_upgrade_io_engine_pods: Vec<Pod>,
 ) -> Result<()> {
-    // Generate k8s clients.
-    let k8s_pods_api = KubeClient::pods_api(namespace.as_str()).await?;
-
     // This makes data-plane upgrade idempotent.
-    let io_engine_label = format!("{IO_ENGINE_LABEL},{CHART_VERSION_LABEL_KEY}");
-    let io_engine_listparams = ListParams::default().labels(io_engine_label.as_str());
-    let io_engine_pod_list =
-        k8s_pods_api
-            .list(&io_engine_listparams)
-            .await
-            .context(ListPodsWithLabel {
-                label: io_engine_label,
-                namespace: namespace.clone(),
-            })?;
-    if data_plane_is_upgraded(&upgrade_target_version, &io_engine_pod_list).await? {
+    if yet_to_upgrade_io_engine_pods.is_empty() {
         info!("Skipping data-plane upgrade: All data-plane Pods are already upgraded");
         return Ok(());
     }
 
     // If here, then there is a need to proceed to data-plane upgrade.
-
-    let yet_to_upgrade_io_engine_label_selector =
-        format!("{IO_ENGINE_LABEL},{CHART_VERSION_LABEL_KEY}!={upgrade_target_version}");
-    let io_engine_listparams =
-        ListParams::default().labels(yet_to_upgrade_io_engine_label_selector.as_str());
-    let namespace = namespace.clone();
 
     // Generate storage REST API client.
     let rest_client = RestClientSet::new_with_url(rest_endpoint)?;
@@ -69,8 +52,9 @@ pub(crate) async fn upgrade_data_plane(
     info!("Starting data-plane upgrade...");
 
     info!(
-        "Trying to remove upgrade {PRODUCT} Node Drain label from {PRODUCT} Nodes, \
-        if any left over from previous upgrade attempts..."
+        "Trying to remove upgrade {product} Node Drain label from {product} Nodes, \
+        if any left over from previous upgrade attempts...",
+        product = product_train()
     );
 
     let storage_nodes_resp = rest_client
@@ -84,27 +68,21 @@ pub(crate) async fn upgrade_data_plane(
     }
 
     loop {
-        let initial_io_engine_pod_list: ObjectList<Pod> = k8s_pods_api
-            .list(&io_engine_listparams)
-            .await
-            .context(ListPodsWithLabel {
-                label: yet_to_upgrade_io_engine_label_selector.clone(),
-                namespace: namespace.clone(),
-            })?;
+        let initial_io_engine_pod_list: Vec<Pod> = KubeClient::list_pods(
+            namespace.clone(),
+            Some(yet_to_upgrade_io_engine_label.clone()),
+            None,
+        )
+        .await?;
 
         // Infinite loop exit.
-        if initial_io_engine_pod_list.items.is_empty() {
+        if initial_io_engine_pod_list.is_empty() {
             break;
         }
 
         for pod in initial_io_engine_pod_list.iter() {
             // Validate the control plane pod is up and running before we start.
-            verify_control_plane_is_running(
-                namespace.clone(),
-                &k8s_pods_api,
-                &upgrade_target_version,
-            )
-            .await?;
+            verify_control_plane_is_running(namespace.clone(), &upgrade_target_version).await?;
 
             // Fetch the node name on which the io-engine pod is running
             let node_name = pod
@@ -150,22 +128,20 @@ pub(crate) async fn upgrade_data_plane(
             }
 
             // restart the data plane pod
-            delete_data_plane_pod(node_name, pod, &k8s_pods_api).await?;
+            delete_data_plane_pod(node_name, pod, namespace.clone()).await?;
 
             // validate the new pod is up and running
-            verify_data_plane_pod_is_running(
-                node_name,
-                namespace.clone(),
-                &upgrade_target_version,
-                &k8s_pods_api,
-            )
-            .await?;
+            verify_data_plane_pod_is_running(node_name, namespace.clone(), &upgrade_target_version)
+                .await?;
 
             // Uncordon the drained node
             uncordon_drained_storage_node(node_name, &rest_client).await?;
         }
 
-        info!("Checking to see if new {PRODUCT} Nodes have been added to the cluster, which require upgrade");
+        info!(
+            "Checking to see if new {} Nodes have been added to the cluster, which require upgrade",
+            product_train()
+        );
     }
 
     info!("Successfully upgraded data-plane!");
@@ -175,7 +151,7 @@ pub(crate) async fn upgrade_data_plane(
 
 /// Uncordon storage Node by removing drain label.
 async fn uncordon_drained_storage_node(node_id: &str, rest_client: &RestClientSet) -> Result<()> {
-    let drain_label_for_upgrade: String = DRAIN_FOR_UPGRADE.to_string();
+    let drain_label_for_upgrade: String = drain_for_upgrade();
     let sleep_duration = Duration::from_secs(1_u64);
     loop {
         let storage_node =
@@ -203,15 +179,15 @@ async fn uncordon_drained_storage_node(node_id: &str, rest_client: &RestClientSe
             {
                 rest_client
                     .nodes_api()
-                    .delete_node_cordon(node_id, DRAIN_FOR_UPGRADE)
+                    .delete_node_cordon(node_id, &drain_for_upgrade())
                     .await
                     .context(StorageNodeUncordon {
                         node_id: node_id.to_string(),
                     })?;
 
                 info!(node.id = %node_id,
-                    label = %DRAIN_FOR_UPGRADE,
-                    "Removed drain label from {PRODUCT} Node"
+                    label = %drain_for_upgrade(),
+                    "Removed drain label from {} Node", product_train()
                 );
             }
             _ => return Ok(()),
@@ -221,7 +197,9 @@ async fn uncordon_drained_storage_node(node_id: &str, rest_client: &RestClientSe
 }
 
 /// Issue delete command on dataplane pods.
-async fn delete_data_plane_pod(node_name: &str, pod: &Pod, k8s_pods_api: &Api<Pod>) -> Result<()> {
+async fn delete_data_plane_pod(node_name: &str, pod: &Pod, namespace: String) -> Result<()> {
+    let k8s_pods_api = KubeClient::pods_api(namespace.as_str()).await?;
+
     // Deleting the io-engine pod
     let pod_name = pod.name_any();
     info!(
@@ -245,19 +223,11 @@ async fn verify_data_plane_pod_is_running(
     node_name: &str,
     namespace: String,
     upgrade_target_version: &String,
-    k8s_pods_api: &Api<Pod>,
 ) -> Result<()> {
     let duration = Duration::from_secs(5_u64);
     // Validate the new pod is up and running
     info!(node.name = %node_name, "Waiting for data-plane Pod to come to Ready state");
-    while !data_plane_pod_is_running(
-        node_name,
-        namespace.clone(),
-        upgrade_target_version,
-        k8s_pods_api,
-    )
-    .await?
-    {
+    while !data_plane_pod_is_running(node_name, namespace.clone(), upgrade_target_version).await? {
         sleep(duration).await;
     }
     Ok(())
@@ -285,7 +255,7 @@ async fn wait_for_rebuild(node_name: &str, rest_client: &RestClientSet) -> Resul
 
 /// Issue the node drain command on the node.
 async fn drain_storage_node(node_id: &str, rest_client: &RestClientSet) -> Result<()> {
-    let drain_label_for_upgrade: String = DRAIN_FOR_UPGRADE.to_string();
+    let drain_label_for_upgrade: String = drain_for_upgrade();
     let sleep_duration = Duration::from_secs(5_u64);
     loop {
         let storage_node =
@@ -311,26 +281,26 @@ async fn drain_storage_node(node_id: &str, rest_client: &RestClientSet) -> Resul
             Some(CordonDrainState::drainingstate(drain_state))
                 if drain_state.drainlabels.contains(&drain_label_for_upgrade) =>
             {
-                info!(node.id = %node_id, "Waiting for {PRODUCT} Node drain to complete");
+                info!(node.id = %node_id, "Waiting for {} Node drain to complete", product_train());
                 // Wait for node drain to complete.
                 sleep(sleep_duration).await;
             }
             Some(CordonDrainState::drainedstate(drain_state))
                 if drain_state.drainlabels.contains(&drain_label_for_upgrade) =>
             {
-                info!(node.id = %node_id, "Drain completed for {PRODUCT} Node");
+                info!(node.id = %node_id, "Drain completed for {} Node", product_train());
                 return Ok(());
             }
             _ => {
                 rest_client
                     .nodes_api()
-                    .put_node_drain(node_id, DRAIN_FOR_UPGRADE)
+                    .put_node_drain(node_id, &drain_for_upgrade())
                     .await
                     .context(DrainStorageNode {
                         node_id: node_id.to_string(),
                     })?;
 
-                info!(node.id = %node_id, "Drain started for {PRODUCT} Node");
+                info!(node.id = %node_id, "Drain started for {} Node", product_train());
             }
         }
     }
@@ -341,29 +311,21 @@ async fn data_plane_pod_is_running(
     node: &str,
     namespace: String,
     upgrade_target_version: &String,
-    k8s_pods_api: &Api<Pod>,
 ) -> Result<bool> {
     let node_name_pod_field = format!("spec.nodeName={node}");
-    let pod_label = format!("{IO_ENGINE_LABEL},{CHART_VERSION_LABEL_KEY}={upgrade_target_version}");
-    let io_engine_listparam = ListParams::default()
-        .labels(pod_label.as_str())
-        .fields(node_name_pod_field.as_str());
+    let pod_label = format!(
+        "{IO_ENGINE_LABEL},{}={upgrade_target_version}",
+        helm_release_version_key()
+    );
 
-    let pod_list: ObjectList<Pod> =
-        k8s_pods_api
-            .list(&io_engine_listparam)
-            .await
-            .context(ListPodsWithLabelAndField {
-                label: pod_label,
-                field: node_name_pod_field,
-                namespace: namespace.clone(),
-            })?;
+    let pod_list: Vec<Pod> =
+        KubeClient::list_pods(namespace, Some(pod_label), Some(node_name_pod_field)).await?;
 
-    if pod_list.items.is_empty() {
+    if pod_list.is_empty() {
         return Ok(false);
     }
 
-    if pod_list.items.len() != 1 {
+    if pod_list.len() != 1 {
         return TooManyIoEnginePods { node_name: node }.fail();
     }
 
@@ -372,12 +334,10 @@ async fn data_plane_pod_is_running(
 
 async fn verify_control_plane_is_running(
     namespace: String,
-    k8s_pods_api: &Api<Pod>,
     upgrade_target_version: &String,
 ) -> Result<()> {
     let duration = Duration::from_secs(3_u64);
-    while !control_plane_is_running(namespace.clone(), k8s_pods_api, upgrade_target_version).await?
-    {
+    while !control_plane_is_running(namespace.clone(), upgrade_target_version).await? {
         sleep(duration).await;
     }
 
@@ -387,38 +347,26 @@ async fn verify_control_plane_is_running(
 /// Validate if control-plane pods are running -- etcd, agent-core, api-rest.
 async fn control_plane_is_running(
     namespace: String,
-    k8s_pods_api: &Api<Pod>,
     upgrade_target_version: &String,
 ) -> Result<bool> {
-    let agent_core_selector_label =
-        format!("{AGENT_CORE_LABEL},{CHART_VERSION_LABEL_KEY}={upgrade_target_version}");
-    let pod_list: ObjectList<Pod> = k8s_pods_api
-        .list(&ListParams::default().labels(agent_core_selector_label.as_str()))
-        .await
-        .context(ListPodsWithLabel {
-            label: AGENT_CORE_LABEL.to_string(),
-            namespace: namespace.clone(),
-        })?;
+    let agent_core_selector_label = format!(
+        "{AGENT_CORE_LABEL},{}={upgrade_target_version}",
+        helm_release_version_key()
+    );
+    let pod_list: Vec<Pod> =
+        KubeClient::list_pods(namespace.clone(), Some(agent_core_selector_label), None).await?;
     let core_is_ready = all_pods_are_ready(pod_list);
 
-    let api_rest_selector_label =
-        format!("{API_REST_LABEL},{CHART_VERSION_LABEL_KEY}={upgrade_target_version}");
-    let pod_list: ObjectList<Pod> = k8s_pods_api
-        .list(&ListParams::default().labels(api_rest_selector_label.as_str()))
-        .await
-        .context(ListPodsWithLabel {
-            label: API_REST_LABEL.to_string(),
-            namespace: namespace.clone(),
-        })?;
+    let api_rest_selector_label = format!(
+        "{API_REST_LABEL},{}={upgrade_target_version}",
+        helm_release_version_key()
+    );
+    let pod_list: Vec<Pod> =
+        KubeClient::list_pods(namespace.clone(), Some(api_rest_selector_label), None).await?;
     let rest_is_ready = all_pods_are_ready(pod_list);
 
-    let pod_list: ObjectList<Pod> = k8s_pods_api
-        .list(&ListParams::default().labels(ETCD_LABEL))
-        .await
-        .context(ListPodsWithLabel {
-            label: ETCD_LABEL.to_string(),
-            namespace: namespace.clone(),
-        })?;
+    let pod_list: Vec<Pod> =
+        KubeClient::list_pods(namespace, Some(ETCD_LABEL.to_string()), None).await?;
     let etcd_is_ready = all_pods_are_ready(pod_list);
 
     Ok(core_is_ready && rest_is_ready && etcd_is_ready)
@@ -438,7 +386,7 @@ async fn is_node_drainable(
         return Ok(false);
     }
 
-    let ana_disabled_label = format!("{CSI_NODE_NVME_ANA}=false");
+    let ana_disabled_label = format!("{}=false", csi_node_nvme_ana());
     let ana_disabled_filter = ListParams::default().labels(ana_disabled_label.as_str());
     let ana_disabled_nodes =
         k8s_nodes_api
@@ -457,9 +405,9 @@ async fn is_node_drainable(
         return Ok(true);
     }
 
-    cordon_storage_node(node_name, CORDON_FOR_ANA_CHECK, rest_client).await?;
+    cordon_storage_node(node_name, &cordon_ana_check(), rest_client).await?;
     let result = frontend_nodes_ana_check(node_name, ana_disabled_nodes, rest_client).await;
-    uncordon_storage_node(node_name, CORDON_FOR_ANA_CHECK, rest_client).await?;
+    uncordon_storage_node(node_name, &cordon_ana_check(), rest_client).await?;
 
     result
 }

@@ -66,7 +66,7 @@ Usage:
 {{ include "csi_node_init_containers" . }}
 */}}
 {{- define "csi_node_init_containers" -}}
-    {{- if .Values.csi.node.initContainers.enabled }}
+    {{- if (.Values.csi.node.initContainers).enabled }}
     {{- include "render" (dict "value" .Values.csi.node.initContainers.containers "context" $) | nindent 8 }}
     {{- end }}
 {{- end -}}
@@ -250,4 +250,12 @@ Usage:
 {{ $param | quote }}: {{ $val | quote }}
         {{- end -}}
     {{- end -}}
+{{- end -}}
+
+{{/*
+Adds the image prefix to image name
+*/}}
+{{- define "image_prefix" -}}
+    {{ $product := .Files.Get "product.yaml" | fromYaml }}
+    {{- print $product.imagePrefix -}}
 {{- end -}}

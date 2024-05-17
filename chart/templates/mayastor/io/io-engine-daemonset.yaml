@@ -39,7 +39,7 @@ spec:
       containers:
       {{- if .Values.base.metrics.enabled }}
       - name: metrics-exporter-io-engine
-        image: "{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ .Chart.Name }}-metrics-exporter-io-engine:{{ default .Values.image.tag .Values.image.repoTags.extensions }}"
+        image: "{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ include "image_prefix" . }}-metrics-exporter-io-engine:{{ default .Values.image.tag .Values.image.repoTags.extensions }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         env:
         - name: MY_NODE_NAME
@@ -59,7 +59,7 @@ spec:
           - "--ansi-colors={{ .Values.base.logging.color }}"
       {{- end }}
       - name: io-engine
-        image: "{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ .Chart.Name }}-io-engine:{{ default .Values.image.tag .Values.image.repoTags.dataPlane }}"
+        image: "{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ include "image_prefix" . }}-io-engine:{{ default .Values.image.tag .Values.image.repoTags.dataPlane }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         env:
         - name: RUST_LOG
@@ -86,6 +86,10 @@ spec:
           value: "1"
         - name: NEXUS_NVMF_RESV_ENABLE
           value: "1"
+        {{- if $safeMount := .Values.base.safeMount }}
+        - name: USE_SAFE_MOUNT
+          value: {{ $safeMount | quote }}
+        {{- end }}
         args:
         # The -l argument accepts cpu-list. Indexing starts at zero.
         # For example -l 1,2,10-20 means use core 1, 2, 10 to 20.
