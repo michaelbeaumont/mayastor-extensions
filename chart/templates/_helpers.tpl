@@ -20,7 +20,7 @@ Usage:
 */}}
 {{- define "base_init_core_containers" -}}
     {{- if .Values.base.initCoreContainers.enabled }}
-    {{- include "render" (dict "value" .Values.base.initCoreContainers.containers "context" $) | nindent 8 }}
+    {{- include "render_init_containers" (dict "value" .Values.base.initCoreContainers.containers "context" $) | nindent 8 }}
     {{- end }}
 {{- end -}}
 
@@ -31,7 +31,7 @@ Usage:
 */}}
 {{- define "base_init_ha_node_containers" -}}
     {{- if .Values.base.initHaNodeContainers.enabled }}
-    {{- include "render" (dict "value" .Values.base.initHaNodeContainers.containers "context" $) | nindent 8 }}
+    {{- include "render_init_containers" (dict "value" .Values.base.initHaNodeContainers.containers "context" $) | nindent 8 }}
     {{- end }}
 {{- end -}}
 
@@ -42,20 +42,26 @@ Usage:
 */}}
 {{- define "base_init_containers" -}}
     {{- if .Values.base.initContainers.enabled }}
-    {{- include "render" (dict "value" .Values.base.initContainers.containers "context" $) | nindent 8 }}
+    {{- include "render_init_containers" (dict "value" .Values.base.initContainers.containers "context" $) | nindent 8 }}
     {{- end }}
-    {{- include "jaeger_agent_init_container" . }}
+    {{- include "jaeger_collector_init_container" . }}
 {{- end -}}
 
 {{/*
 Renders the jaeger agent init container, if enabled
 Usage:
-{{ include "jaeger_agent_init_container" . }}
+{{ include "jaeger_collector_init_container" . }}
 */}}
-{{- define "jaeger_agent_init_container" -}}
+{{- define "jaeger_collector_init_container" -}}
     {{- if .Values.base.jaeger.enabled }}
       {{- if .Values.base.jaeger.initContainer }}
-      {{- include "render" (dict "value" .Values.base.jaeger.agent.initContainer "context" $) | nindent 8 }}
+      {{- if .Values.base.jaeger.collector }}
+      {{- include "render_init_containers" (dict "value" .Values.base.jaeger.collector.initContainer "context" $) | nindent 8 }}
+      {{- else }}
+        - name: jaeger-probe
+          image: busybox:latest
+          command: [ 'sh', '-c', 'trap "exit 1" TERM; until nc -vzw 5 -u jaeger-collector:4317; do date; echo "Waiting for jaeger..."; sleep 1; done;' ]
+      {{- end }}
       {{- end }}
     {{- end }}
 {{- end -}}
@@ -67,7 +73,7 @@ Usage:
 */}}
 {{- define "csi_node_init_containers" -}}
     {{- if (.Values.csi.node.initContainers).enabled }}
-    {{- include "render" (dict "value" .Values.csi.node.initContainers.containers "context" $) | nindent 8 }}
+    {{- include "render_init_containers" (dict "value" .Values.csi.node.initContainers.containers "context" $) | nindent 8 }}
     {{- end }}
 {{- end -}}
 
@@ -77,8 +83,20 @@ Usage:
 {{ include "base_pull_secrets" . }}
 */}}
 {{- define "base_pull_secrets" -}}
-    {{- if .Values.base.imagePullSecrets.enabled }}
-    {{- include "render" (dict "value" .Values.base.imagePullSecrets.secrets "context" $) | nindent 8 }}
+    {{- if (not (empty .Values.image.pullSecrets)) }}
+        {{- range .Values.image.pullSecrets | uniq -}}
+            {{ nindent 8 "- name:" }} {{ . }}
+        {{- end }}
+    {{- else -}}
+        {{- if .Values.base.imagePullSecrets }}
+            {{- if .Values.base.imagePullSecrets.enabled }}
+                {{- if (empty .Values.base.imagePullSecrets.secrets) }}
+                    {{ nindent 8 "- name: login" }}
+                {{- else -}}
+                    {{- include "render" (dict "value" .Values.base.imagePullSecrets.secrets "context" $) | nindent 8 }}
+                {{- end}}
+            {{- end }}
+        {{- end }}
     {{- end }}
 {{- end -}}
 
@@ -89,7 +107,7 @@ Usage:
 */}}
 {{- define "rest_agent_init_container" -}}
     {{- if .Values.base.initRestContainer.enabled }}
-        {{- include "render" (dict "value" .Values.base.initRestContainer.initContainer "context" $) | nindent 8 }}
+    {{- include "render_init_containers" (dict "value" .Values.base.initRestContainer.initContainer "context" $) | nindent 8 }}
     {{- end }}
 {{- end -}}
 
@@ -258,4 +276,70 @@ Adds the image prefix to image name
 {{- define "image_prefix" -}}
     {{ $product := .Files.Get "product.yaml" | fromYaml }}
     {{- print $product.imagePrefix -}}
+{{- end -}}
+
+{{/*
+Get the Jaeger URL
+*/}}
+{{- define "jaeger_url" -}}
+    {{- if $collector := .Values.base.jaeger.collector }}
+        {{- $collector.name }}:{{ $collector.port }}
+    {{- else }}
+        {{- print "jaeger-collector:4317" -}}
+    {{- end }}
+{{- end -}}
+
+{{/*
+ Create a normalized etcd name based on input parameters
+ */}}
+{{- define "etcdUrl" -}}
+    {{- if eq (.Values.etcd.enabled) false }}
+        {{- if .Values.etcd.externalUrl }}
+            {{- .Values.etcd.externalUrl }}
+        {{- else }}
+          {{- fail "etcd.externalUrl must be set" }}
+        {{- end }}
+    {{- else }}
+        {{- .Release.Name }}-etcd:{{ .Values.etcd.service.port }}
+    {{- end }}
+{{- end }}
+
+{{/*
+ Check if etcd is explicitly enabled/disabled or implicitly enabled (for upgrades where enabled key was absent)
+ */}}
+{{- define "etcdEnabled" -}}
+    {{- if eq (.Values.etcd.enabled) false }}
+        {{- "false" -}}
+    {{- else if eq (.Values.etcd.enabled) true }}
+        {{- "true" -}}
+    {{- else if .Values.etcd.externalUrl }}
+        {{- "false" -}}
+    {{- else }}
+        {{- "true" -}}
+    {{- end }}
+{{- end }}
+
+{{/*
+Renders init containers. If unset it sets the container image.
+*/}}
+{{- define "render_init_containers" -}}
+    {{- $containers := list }}
+    {{- $image := .context.Values.base.initContainers.image }}
+    {{- $values_image := .context.Values.image }}
+    {{- range .value -}}
+        {{ $container := . }}
+        {{- if not (hasKey . "imagePullPolicy") }}
+            {{- $pullPolicy := $image.pullPolicy | default $values_image.pullPolicy }}
+            {{- $_ := set $container "imagePullPolicy" $pullPolicy }}
+        {{- end }}
+        {{- if or (not $image) (not (hasKey . "image")) }}
+            {{- $registry := $image.registry | default $values_image.registry | default "docker.io" }}
+            {{- $namespace := $image.namespace | default $values_image.repo }}
+            {{- $name := $image.name | default "alpine-sh" }}
+            {{- $tag := $image.tag | default "4.1.0" }}
+            {{- $_ := set $container "image" (printf "%s/%s/%s:%s" $registry $namespace $name $tag) }}
+        {{- end }}
+        {{- $containers = append $containers $container }}
+    {{- end -}}
+    {{- tpl ($containers | toYaml) .context }}
 {{- end -}}

@@ -8,15 +8,16 @@ use crate::{
             event_stats, EventData, NexusCreated, NexusDeleted, PoolCreated, PoolDeleted, Pools,
             RebuildEnded, RebuildStarted, Replicas, Report, VolumeCreated, VolumeDeleted, Volumes,
         },
+        storage_rest::list_all_volumes,
     },
     transmitter::*,
 };
 use clap::Parser;
-use collector::report_models::Nexus;
+use collector::report_models::{MayastorManagedDisks, Nexus, StorageMedia, StorageNodes};
 use obs::common::constants::*;
 use openapi::tower::client::{ApiClient, Configuration};
 use sha256::digest;
-use std::time;
+use std::{collections::HashMap, time};
 use tokio::time::sleep;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -177,30 +178,43 @@ async fn generate_report(
         }
     };
 
+    // List of disks on each node.
+    let mut node_disks = HashMap::new();
     let nodes = http_client.nodes_api().get_nodes(None).await;
     match nodes {
-        Ok(nodes) => report.storage_node_count = nodes.into_body().len() as u8,
+        Ok(nodes) => {
+            let nodes = nodes.into_body();
+            for node in &nodes {
+                if let Ok(b_devs_result) = http_client
+                    .block_devices_api()
+                    .get_node_block_devices(&node.id, Some(true))
+                    .await
+                {
+                    node_disks
+                        .entry(node.id.to_string())
+                        .or_insert_with(Vec::new)
+                        .extend(b_devs_result.into_body());
+                };
+            }
+            report.storage_node_count = nodes.len() as u8
+        }
         Err(err) => {
             error!("{:?}", err);
         }
     };
 
-    let pools = http_client.pools_api().get_pools().await;
+    let pools = http_client.pools_api().get_pools(None).await;
     match pools {
-        Ok(pools) => report.pools = Pools::new(pools.into_body(), event_data.clone()),
-        Err(err) => {
+        Ok(ref pools) => report.pools = Pools::new(pools.clone().into_body(), event_data.clone()),
+        Err(ref err) => {
             error!("{:?}", err);
         }
     };
 
-    let volumes = http_client.volumes_api().get_volumes(0, None, None).await;
-    let volumes = match volumes {
-        Ok(volumes) => Some(volumes.into_body()),
-        Err(err) => {
-            error!("{:?}", err);
-            None
-        }
-    };
+    let volumes = list_all_volumes(&http_client)
+        .await
+        .map_err(|error| error!("Failed to list all volumes: {error:?}"))
+        .ok();
 
     if let Some(volumes) = &volumes {
         report.volumes = Volumes::new(volumes.clone(), event_data.clone());
@@ -208,11 +222,38 @@ async fn generate_report(
 
     let replicas = http_client.replicas_api().get_replicas().await;
     match replicas {
-        Ok(replicas) => report.replicas = Replicas::new(replicas.into_body().len(), volumes),
-        Err(err) => {
+        Ok(ref replicas) => {
+            report.replicas = Replicas::new(replicas.clone().into_body().len(), volumes)
+        }
+        Err(ref err) => {
             error!("{:?}", err);
         }
     };
+
+    if let Ok(pools) = pools {
+        report.mayastor_managed_disks =
+            MayastorManagedDisks::new(pools.clone().into_body(), node_disks.clone());
+        if let Ok(replicas) = replicas {
+            report.storage_nodes = StorageNodes::new(
+                replicas.clone().into_body(),
+                pools.into_body(),
+                node_disks.clone(),
+            )
+        }
+    }
+
+    // find valid disks to calculate storage media metrics
+    let valid_disks = node_disks
+        .values()
+        .flat_map(|disks| disks.iter().cloned())
+        .filter(|device| {
+            device.size > 0
+                && device.devtype != "partition"
+                && !device.devpath.starts_with("/devices/virtual/")
+        })
+        .collect();
+
+    report.storage_media = StorageMedia::new(valid_disks);
 
     report.nexus = Nexus::new(event_data);
     report
