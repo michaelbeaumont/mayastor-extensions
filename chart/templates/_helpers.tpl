@@ -1,5 +1,36 @@
 {{/* vim: set filetype=mustache: */}}
 
+{{- define "mayastor.agents.core.name" -}}
+{{- printf "%s-agent-core" .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "mayastor.agents.ha.name" -}}
+{{- printf "%s-agent-ha" .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "mayastor.api-rest.name" -}}
+{{- printf "%s-api-rest" .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "mayastor.csi.controller.name" -}}
+{{- printf "%s-csi-controller" .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "mayastor.csi.node.name" -}}
+{{- printf "%s-csi-node" .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{/*
+Labels common to this release's mayastor resources.
+*/}}
+{{- define "mayastor.commonLabels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: openebs
+{{- end -}}
+
 {{/*
 Renders a value that contains template.
 Usage:

@@ -4,6 +4,8 @@ metadata:
   name: {{ .Release.Name }}-api-rest
   labels:
     app: api-rest
+    app.kubernetes.io/name: {{ include "mayastor.api-rest.name" . }}
+    {{- include "mayastor.commonLabels" . | nindent 4 }}
     {{ include "label_prefix" . }}/release: {{ .Release.Name }}
     {{ include "label_prefix" . }}/version: {{ .Chart.Version }}
 spec:
